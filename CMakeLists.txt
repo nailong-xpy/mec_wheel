@@ -47,12 +47,16 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
 )
 
-file(GLOB_RECURSE sources CONFIGURE_DEPENDS Core/Src/*.c Core/Inc/*.h)
+#file(GLOB_RECURSE sources CONFIGURE_DEPENDS Core/Src/*.c Core/Inc/*.h)
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-        ${sources}
+#        ${sources}
+        Core/Inc/control.h
+        Core/Src/control.c
+        Core/Inc/driver.h
+        Core/Src/driver.c
 )
 
 # Add include paths

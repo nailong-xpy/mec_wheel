@@ -191,10 +191,10 @@ SECTIONS
   .ARM.attributes 0 : { *(.ARM.attributes) }
 
   .out :
-        {
-          . = ALIGN(4);
-          . = ALIGN(4);
-        } >RAM
+    {
+      . = ALIGN(4);
+      . = ALIGN(4);
+    } >RAM
 }
 
 

@@ -64,6 +64,7 @@ typedef struct speed_data{
   float delta_distance;
 } Speed_Data;
 #define wheel 6.5f
+#define wheel_encoder 6.0f
 extern char imu_rx_buffer[4096]__attribute__((section(".out")));
 extern char speed_rx_buffer[4096]__attribute__((section(".out")));
 /* USER CODE END EFP */

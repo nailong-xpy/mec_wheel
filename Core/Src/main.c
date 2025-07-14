@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "lptim.h"
 #include "memorymap.h"
 #include "tim.h"
 #include "usart.h"
@@ -74,19 +75,26 @@ char imu_data_buffer[4096];
 
 const float ENCODER_RESOLUTION_AB = 500.0f * 4.0f*30.f;
 const float ENCODER_RESOLUTION_CD = 13.0f * 4.0f*30.f;
+const float ENCODER_RESOLUTION_XY = 4.0f * 1024.0f;
 const float METERS_PER_PULSE_AB = (wheel * 3.1415926535f) / ENCODER_RESOLUTION_AB;//单位cm
 const float METERS_PER_PULSE_CD = (wheel * 3.1415926535f) / ENCODER_RESOLUTION_CD;//单位cm
+const float METERS_PER_PULSE_XY = (wheel_encoder * 3.1415926535f) / ENCODER_RESOLUTION_XY;//单位cm
 Speed_Data Speed_Data_A,Speed_Data_B,Speed_Data_C,Speed_Data_D;
 
-Speed Speed_car, Position_car;
+// 新加的正交编码器
+Speed_Data Speed_X, Speed_Y;
 
-KalmanFilter speed_x, speed_y;
+Speed Speed_car, Position_car, Imu_Speed;
+
+KalmanFilter speed_x, speed_y, acc_x, acc_y, angle_z;
 
 float Motor_A_Set,Motor_B_Set,Motor_C_Set,Motor_D_Set;
 
+float z_target = 0.0f;
 
 // jy62
 sensor_data_fifo_s accel_data, gyro_data, angle_data;
+float accx,accy;
 
 
 /* USER CODE END PV */
@@ -147,12 +155,17 @@ int main(void)
   MX_TIM6_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
+  MX_LPTIM1_Init();
+  MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim5, TIM_CHANNEL_ALL);
+
+  HAL_TIM_Encoder_Start(&htim8, TIM_CHANNEL_ALL);
+  HAL_LPTIM_Counter_Start_IT(&hlptim1, 0xFFFF);
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -177,17 +190,34 @@ int main(void)
   accel_data.scale = 1.0f;
   accel_data.samples = 0;
 
-  angle_data.scale = 1.0 / 32768.0f * 180.0f;
+  angle_data.scale = 1.0 / 32768.0f * 180.0f;//degree
+  gyro_data.scale = 1.0 / 32768.0f * 2000.0f;//dps
+  accel_data.scale = 1.0 / 32768.0f * 16.0f * 9.8f * 100.0f;//cm/s^2
 
   memset(imu_rx_buffer, 0, sizeof(imu_rx_buffer));
+
+  char z_cali[3] = {0xff,0xaa,0x52};
+  // z归零
+  HAL_UART_Transmit(&huart3, (uint8_t *)z_cali, sizeof(z_cali), HAL_MAX_DELAY);
+  z_cali[2] = 0x67;
+  // acc校准
+  HAL_UART_Transmit(&huart3, (uint8_t *)z_cali, sizeof(z_cali), HAL_MAX_DELAY);
+
   //
 
   Position_car.x = 0;
   Position_car.y = 0;
   Position_car.z = 0;
 
+  Imu_Speed.x = 0;
+  Imu_Speed.y = 0;
+
   kalman_filter_init(&speed_x, 0.01, 0.2);
   kalman_filter_init(&speed_y, 0.01, 0.2);
+
+  kalman_filter_init(&acc_x, 0.01, 0.5);
+  kalman_filter_init(&acc_y, 0.01, 0.5);
+  kalman_filter_init(&angle_z, 0.01, 0.5);
 
 
   // HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx, sizeof(char));
@@ -219,8 +249,15 @@ int main(void)
 
 
 
-    sprintf(msg, "%d,%d %d\r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)((float)angle_data.z[0] * angle_data.scale * 10));
+    // sprintf(msg, "%d,%d %d\r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)((float)angle_data.z[0] * angle_data.scale * 10));
     // sprintf(msg, "%d,%d,%d,%d \r\n", (int)(Speed_car.x*100), (int)(Speed_car.y*100), (int)(Speed_car.z*100),(int)(Position_car.y*100));
+
+    // sprintf(msg, "%d %d %d %d %d \r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(Imu_Speed.x * 100), (int)(gyro_data.z[0] * gyro_data.scale * 10));
+    // sprintf(msg, "%d %d %d \r\n", (int)(Speed_car.x*100), (int)(accx * 100), (int)(accy*100));
+
+    sprintf(msg, "%d,%d \r\n", (int)(Speed_X.speed*100), (int)(Speed_Y.speed*100));
+    // sprintf(msg, "%d,%d \r\n", TIM8->CNT, LPTIM1->CNT);
+
 
     // sprintf(msg, "%d \r\n", Speed_Data_1.current_count);
     HAL_UART_Transmit(&huart1, msg, strlen(msg), HAL_MAX_DELAY);
@@ -308,6 +345,10 @@ void update_speed(Speed_Data* speed, int tim, float mpp) {
       speed->current_count = TIM5->CNT;
   }else if (tim == 4) {
       speed->current_count = TIM4->CNT;
+  }else if (tim == 5) {
+      speed->current_count = TIM8->CNT;
+  }else if (tim == 8) {
+      speed->current_count = LPTIM1->CNT;
   }
 
 
@@ -356,10 +397,38 @@ void Position_Transform(double Va,double Vb,double Vc,double Vd)
 
 void Speed_Int(float dt) {
   Position_Transform(Speed_Data_A.speed, Speed_Data_B.speed, Speed_Data_C.speed, Speed_Data_D.speed);
-  Position_car.z += Speed_car.z*dt;
+
+  float ratio = 0.6;
+  float tmp_x = Speed_car.x * ratio + (Imu_Speed.x - 0.1) * (1-ratio);
+  float tmp_y = Speed_car.y * ratio + (Imu_Speed.y + 0.115) * (1-ratio);
+  Speed_car.x = tmp_x;
+  Speed_car.y = tmp_y;
+  Imu_Speed.x = tmp_x;
+  Imu_Speed.y = tmp_y;
+
+  // Position_car.z += Speed_car.z*dt;
+  float tmp_angle_z = kalman_filter_update(&angle_z, angle_data.z[0] * angle_data.scale * 3.1415926535f / 180.0f);
+  Position_car.z = tmp_angle_z; // 角度转弧度
   Position_car.x += (Speed_car.x*cosf(Position_car.z)-Speed_car.y*sinf(Position_car.z))*dt;
   Position_car.y += (Speed_car.x*sinf(Position_car.z)+Speed_car.y*cosf(Position_car.z))*dt;
 }
+
+
+void Imu_Speed_Int(float dt) {
+  float speed_x = kalman_filter_update(&acc_x, accel_data.y[0] * accel_data.scale);
+  float speed_y = kalman_filter_update(&acc_y, accel_data.x[0] * accel_data.scale);
+
+  speed_x += 10.2;
+  speed_y += -11.6;
+
+  accy = speed_y;
+  accx = speed_x;
+  Imu_Speed.x += speed_x * dt;
+  Imu_Speed.y += speed_y * dt;
+}
+
+
+
 int string2int(int start, int end) {
   int result = 0;
   if (speed_data_buffer[start] == '-') {
@@ -375,6 +444,7 @@ int string2int(int start, int end) {
   return result;
 }
 
+double motor_speed_x, motor_speed_y, motor_speed_z;
 void SpeedHandler() {
     // HAL_UART_Transmit(&huart1, (uint8_t *)data_buffer, strlen(data_buffer), HAL_MAX_DELAY);
   int idx0 = 0;
@@ -387,16 +457,12 @@ void SpeedHandler() {
   while ((speed_data_buffer[idx3] != '\r')&&(speed_data_buffer[idx3] !='\n')) idx3++;
 
 
-  double speed_y = -string2int(idx0+1, idx1-1) / 17.50;
-  double speed_x = string2int(idx1+1, idx2-1) / 17.50;
-  double speed_z = string2int(idx2+1, idx3-1) / 100.0; // 0.01 rad/s
-  char msg[30];
+  motor_speed_y = -string2int(idx0+1, idx1-1) / 17.50;
+  motor_speed_x = string2int(idx1+1, idx2-1) / 17.50;
+  z_target += string2int(idx2+1, idx3-1) / 1000.0; // 0.01 rad/s
+  if (z_target > 2.0f * PI) z_target -= 2.0f * PI;
+  if (z_target < 0) z_target += 2.0f * PI;
 
-  // sprintf(msg, "x:%d,y:%d\r\n", (int)(speed_x*50), (int)(speed_y*50));
-  //
-  // HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
-
-  Move_Transform(speed_x, speed_y, speed_z);
 }
 
 
@@ -469,10 +535,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       update_speed(&Speed_Data_C, 3, METERS_PER_PULSE_CD);
       update_speed(&Speed_Data_D, 4, METERS_PER_PULSE_CD);
 
+    // 新加的正交编码器
+      update_speed(&Speed_X, 5, METERS_PER_PULSE_XY);
+      update_speed(&Speed_Y, 6, METERS_PER_PULSE_XY);
+
+      Imu_Speed_Int(0.01f);
+
       Speed_Int(0.01f);
 
       Speed_PID();
 
+      float P = -6.0f;
+      float D = -7.0;
+      // if (Position_car.z > 0.1) motor_speed_z = Position_car.z * P + gyro_data.z[0] * gyro_data.scale * D;
+
+      if (Position_car.z - z_target > PI) Position_car.z -= 2.0f * PI;
+      if (Position_car.z - z_target < -PI) Position_car.z += 2.0f * PI;
+
+      if (fabs(Position_car.z - z_target) > 0.06)motor_speed_z = (Position_car.z - z_target) * P + (abs((Position_car.z - z_target))) * (Position_car.z - z_target) * D;
+      else motor_speed_z = 0;
+      Move_Transform(motor_speed_x, motor_speed_y, motor_speed_z);
   }
 }
 

@@ -83,6 +83,10 @@ Speed_Data Speed_Data_A,Speed_Data_B,Speed_Data_C,Speed_Data_D;
 
 // 新加的正交编码器
 Speed_Data Speed_X, Speed_Y;
+float last_angle_z = 0.0f; // 上一次的角度
+float rotation_speed_x, rotation_speed_y;
+float r_y = 10.63f, r_x = 18.3f; // 编码轮到质心的距离 cm
+float w ;
 
 Speed Speed_car, Position_car, Imu_Speed;
 
@@ -90,7 +94,9 @@ KalmanFilter speed_x, speed_y, acc_x, acc_y, angle_z;
 
 float Motor_A_Set,Motor_B_Set,Motor_C_Set,Motor_D_Set;
 
-float z_target = 0.0f;
+float z_target = PI * 0.5f;
+
+float position_target_x, position_target_y;
 
 // jy62
 sensor_data_fifo_s accel_data, gyro_data, angle_data;
@@ -253,11 +259,14 @@ int main(void)
     // sprintf(msg, "%d,%d,%d,%d \r\n", (int)(Speed_car.x*100), (int)(Speed_car.y*100), (int)(Speed_car.z*100),(int)(Position_car.y*100));
 
     // sprintf(msg, "%d %d %d %d %d \r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(Imu_Speed.x * 100), (int)(gyro_data.z[0] * gyro_data.scale * 10));
+    // sprintf(msg, "%d %d %d %d %d \r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(w*100), (int)(Speed_car.x * 100));
+    sprintf(msg, "%d %d %d\r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100));
+
     // sprintf(msg, "%d %d %d \r\n", (int)(Speed_car.x*100), (int)(accx * 100), (int)(accy*100));
 
-    sprintf(msg, "%d,%d \r\n", (int)(Speed_X.speed*100), (int)(Speed_Y.speed*100));
-    // sprintf(msg, "%d,%d,%d,%d,%d,%d \r\n", TIM8->CNT, LPTIM1->CNT, TIM2->CNT,
-            // TIM3->CNT, TIM4->CNT, TIM5->CNT);
+    // sprintf(msg, "%d,%d \r\n", (int)(Speed_X.speed*100), (int)(Speed_Y.speed*100));
+    // sprintf(msg, "%d,%d \r\n", TIM8->CNT,
+    //         TIM3->CNT);
 
 
     // sprintf(msg, "%d \r\n", Speed_Data_1.current_count);
@@ -402,21 +411,43 @@ void Position_Transform(double Va,double Vb,double Vc,double Vd)
 }
 
 void Speed_Int(float dt) {
-  Position_Transform(Speed_Data_A.speed, Speed_Data_B.speed, Speed_Data_C.speed, Speed_Data_D.speed);
+  // Position_Transform(Speed_Data_A.speed, Speed_Data_B.speed, Speed_Data_C.speed, Speed_Data_D.speed);
+  //
+  // float ratio = 0.6;
+  // float tmp_x = Speed_car.x * ratio + (Imu_Speed.x - 0.1) * (1-ratio);
+  // float tmp_y = Speed_car.y * ratio + (Imu_Speed.y + 0.115) * (1-ratio);
+  // Speed_car.x = tmp_x;
+  // Speed_car.y = tmp_y;
+  // Imu_Speed.x = tmp_x;
+  // Imu_Speed.y = tmp_y;
 
-  float ratio = 0.6;
-  float tmp_x = Speed_car.x * ratio + (Imu_Speed.x - 0.1) * (1-ratio);
-  float tmp_y = Speed_car.y * ratio + (Imu_Speed.y + 0.115) * (1-ratio);
-  Speed_car.x = tmp_x;
-  Speed_car.y = tmp_y;
-  Imu_Speed.x = tmp_x;
-  Imu_Speed.y = tmp_y;
+  Speed_car.x = Speed_X.speed;
+  Speed_car.y = Speed_Y.speed;
 
   // Position_car.z += Speed_car.z*dt;
-  float tmp_angle_z = kalman_filter_update(&angle_z, angle_data.z[0] * angle_data.scale * 3.1415926535f / 180.0f);
+  // float tmp_angle_z = kalman_filter_update(&angle_z, angle_data.z[0] * angle_data.scale * 3.1415926535f / 180.0f);
+  float tmp_angle_z = angle_data.z[0] * angle_data.scale * 3.1415926535f / 180.0f + PI * 0.5f;
+  if (tmp_angle_z > 2.0f * PI) tmp_angle_z -= 2.0f * PI;
   Position_car.z = tmp_angle_z; // 角度转弧度
-  Position_car.x += (Speed_car.x*cosf(Position_car.z)-Speed_car.y*sinf(Position_car.z))*dt;
-  Position_car.y += (Speed_car.x*sinf(Position_car.z)+Speed_car.y*cosf(Position_car.z))*dt;
+
+  if (tmp_angle_z - last_angle_z > PI) {
+    last_angle_z += 2*PI;
+  } else if (tmp_angle_z - last_angle_z < -PI) {
+    last_angle_z -= 2*PI;
+  }
+  w = (tmp_angle_z - last_angle_z)/dt;
+  last_angle_z = tmp_angle_z;
+  rotation_speed_x = w * r_x ;
+  rotation_speed_y = w * r_y;
+
+  Speed_car.x -= rotation_speed_x;
+  Speed_car.y -= rotation_speed_y;
+
+  if (isnan(Position_car.x)) Position_car.x = 0;
+  if (isnan(Position_car.y)) Position_car.y = 0;
+
+  Position_car.x += (Speed_car.x*cosf(Position_car.z)+Speed_car.y*sinf(Position_car.z))*dt;
+  Position_car.y += (-Speed_car.x*sinf(Position_car.z)+Speed_car.y*cosf(Position_car.z))*dt;
 }
 
 
@@ -470,6 +501,22 @@ void SpeedHandler() {
   z_target += string2int(idx2+1, idx3-1) / 1000.0; // 0.01 rad/s
   if (z_target > 2.0f * PI) z_target -= 2.0f * PI;
   if (z_target < 0) z_target += 2.0f * PI;
+
+}
+
+void PositionHandler() {
+  int idx0 = 0;
+  while (speed_data_buffer[idx0] != ':') idx0++;
+  int idx1 = idx0 + 1;
+  while (speed_data_buffer[idx1] != ',') idx1++;
+  int idx2 = idx1 + 1;
+  while ((speed_data_buffer[idx2] != '\r')&&(speed_data_buffer[idx2] !='\n')) idx2++;
+
+
+  // motor_speed_y = -string2int(idx0+1, idx1-1) / 17.50;
+  // motor_speed_x = string2int(idx1+1, idx2-1) / 17.50;
+  position_target_y = -string2int(idx0+1, idx1-1) / 100.0;
+  position_target_x = string2int(idx1+1, idx2-1) / 100.0;
 
 }
 
@@ -547,6 +594,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     // 原来的闭环关掉了， lptim不好使， 直接用原来的tim做正交的编码器
       update_speed(&Speed_X, 1, METERS_PER_PULSE_XY);
       update_speed(&Speed_Y, 5, METERS_PER_PULSE_XY);
+      Speed_Y.speed *= -1.0f; // 反向
 
       Imu_Speed_Int(0.01f);
 

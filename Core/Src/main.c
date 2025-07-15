@@ -256,7 +256,8 @@ int main(void)
     // sprintf(msg, "%d %d %d \r\n", (int)(Speed_car.x*100), (int)(accx * 100), (int)(accy*100));
 
     sprintf(msg, "%d,%d \r\n", (int)(Speed_X.speed*100), (int)(Speed_Y.speed*100));
-    // sprintf(msg, "%d,%d \r\n", TIM8->CNT, LPTIM1->CNT);
+    // sprintf(msg, "%d,%d,%d,%d,%d,%d \r\n", TIM8->CNT, LPTIM1->CNT, TIM2->CNT,
+            // TIM3->CNT, TIM4->CNT, TIM5->CNT);
 
 
     // sprintf(msg, "%d \r\n", Speed_Data_1.current_count);
@@ -380,10 +381,15 @@ void Speed_PID() {
   PID_output_2(Motor_C_Set, Speed_Data_C.speed, &Motor_C_PID, 5000);
   PID_output_2(Motor_D_Set, Speed_Data_D.speed, &Motor_D_PID, 5000);
 
-  SetMotor(MOTOR_A, (int)Motor_A_PID.output);
-  SetMotor(MOTOR_B, (int)Motor_B_PID.output);
-  SetMotor(MOTOR_C, (int)Motor_C_PID.output);
-  SetMotor(MOTOR_D, (int)Motor_D_PID.output);
+  // SetMotor(MOTOR_A, (int)Motor_A_PID.output);
+  // SetMotor(MOTOR_B, (int)Motor_B_PID.output);
+  // SetMotor(MOTOR_C, (int)Motor_C_PID.output);
+  // SetMotor(MOTOR_D, (int)Motor_D_PID.output);
+
+  SetMotor(MOTOR_A, Motor_A_Set);
+  SetMotor(MOTOR_B, Motor_B_Set);
+  SetMotor(MOTOR_C, Motor_C_Set);
+  SetMotor(MOTOR_D, Motor_D_Set);
 }
 
 void Position_Transform(double Va,double Vb,double Vc,double Vd)
@@ -457,8 +463,10 @@ void SpeedHandler() {
   while ((speed_data_buffer[idx3] != '\r')&&(speed_data_buffer[idx3] !='\n')) idx3++;
 
 
-  motor_speed_y = -string2int(idx0+1, idx1-1) / 17.50;
-  motor_speed_x = string2int(idx1+1, idx2-1) / 17.50;
+  // motor_speed_y = -string2int(idx0+1, idx1-1) / 17.50;
+  // motor_speed_x = string2int(idx1+1, idx2-1) / 17.50;
+  motor_speed_y = -string2int(idx0+1, idx1-1) / 1.50;
+  motor_speed_x = string2int(idx1+1, idx2-1) / 1.50;
   z_target += string2int(idx2+1, idx3-1) / 1000.0; // 0.01 rad/s
   if (z_target > 2.0f * PI) z_target -= 2.0f * PI;
   if (z_target < 0) z_target += 2.0f * PI;
@@ -536,8 +544,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       update_speed(&Speed_Data_D, 4, METERS_PER_PULSE_CD);
 
     // 新加的正交编码器
-      update_speed(&Speed_X, 5, METERS_PER_PULSE_XY);
-      update_speed(&Speed_Y, 6, METERS_PER_PULSE_XY);
+    // 原来的闭环关掉了， lptim不好使， 直接用原来的tim做正交的编码器
+      update_speed(&Speed_X, 1, METERS_PER_PULSE_XY);
+      update_speed(&Speed_Y, 5, METERS_PER_PULSE_XY);
 
       Imu_Speed_Int(0.01f);
 
@@ -545,8 +554,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
       Speed_PID();
 
-      float P = -6.0f;
-      float D = -7.0;
+      // float P = -6.0f;
+      // float D = -7.0;
+      float P = -26.0f;
+      float D = -37.0;
       // if (Position_car.z > 0.1) motor_speed_z = Position_car.z * P + gyro_data.z[0] * gyro_data.scale * D;
 
       if (Position_car.z - z_target > PI) Position_car.z -= 2.0f * PI;

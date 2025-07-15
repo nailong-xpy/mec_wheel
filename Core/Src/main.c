@@ -96,7 +96,7 @@ float Motor_A_Set,Motor_B_Set,Motor_C_Set,Motor_D_Set;
 
 float z_target = PI * 0.5f;
 
-float position_target_x, position_target_y;
+float position_target_x = 0, position_target_y = 0;
 
 // jy62
 sensor_data_fifo_s accel_data, gyro_data, angle_data;
@@ -261,6 +261,7 @@ int main(void)
     // sprintf(msg, "%d %d %d %d %d \r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(Imu_Speed.x * 100), (int)(gyro_data.z[0] * gyro_data.scale * 10));
     // sprintf(msg, "%d %d %d %d %d \r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(w*100), (int)(Speed_car.x * 100));
     sprintf(msg, "%d %d %d\r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100));
+    // sprintf(msg, "%d %d %d %d %d %d\r\n", (int)(Position_car.x*100), (int)(Position_car.y*100), (int)(Position_car.z*100), (int)(position_target_x*100), (int)(position_target_y*100), (int)(z_target*1000));
 
     // sprintf(msg, "%d %d %d \r\n", (int)(Speed_car.x*100), (int)(accx * 100), (int)(accy*100));
 
@@ -512,10 +513,7 @@ void PositionHandler() {
   int idx2 = idx1 + 1;
   while ((speed_data_buffer[idx2] != '\r')&&(speed_data_buffer[idx2] !='\n')) idx2++;
 
-
-  // motor_speed_y = -string2int(idx0+1, idx1-1) / 17.50;
-  // motor_speed_x = string2int(idx1+1, idx2-1) / 17.50;
-  position_target_y = -string2int(idx0+1, idx1-1) / 100.0;
+  position_target_y = string2int(idx0+1, idx1-1) / 100.0;
   position_target_x = string2int(idx1+1, idx2-1) / 100.0;
 
 }
@@ -579,11 +577,23 @@ void ImuHandler(uint16_t size) {
 
 bool data_flag = false;
 
+void CheckPosition() {
+  float distance = sqrtf(powf(Position_car.x - position_target_x, 2) + powf(Position_car.y - position_target_y, 2));
+  if (distance < 6) {
+    motor_speed_x = 0;
+  } else {
+    motor_speed_x = 300;
+    z_target = atan2(position_target_x - Position_car.x, position_target_y - Position_car.y);
+  }
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance==TIM6) {
 
-      if (data_flag) SpeedHandler(),data_flag = false;
+      // if (data_flag) SpeedHandler(),data_flag = false;
+      if (data_flag) PositionHandler(),data_flag = false;
+      CheckPosition();
 
       update_speed(&Speed_Data_A, 1, METERS_PER_PULSE_AB);
       update_speed(&Speed_Data_B, 2, METERS_PER_PULSE_AB);
@@ -605,7 +615,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       // float P = -6.0f;
       // float D = -7.0;
       float P = -26.0f;
-      float D = -37.0;
+      float D = -30.0;
       // if (Position_car.z > 0.1) motor_speed_z = Position_car.z * P + gyro_data.z[0] * gyro_data.scale * D;
 
       if (Position_car.z - z_target > PI) Position_car.z -= 2.0f * PI;
@@ -613,6 +623,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
       if (fabs(Position_car.z - z_target) > 0.06)motor_speed_z = (Position_car.z - z_target) * P + (abs((Position_car.z - z_target))) * (Position_car.z - z_target) * D;
       else motor_speed_z = 0;
+      if (motor_speed_z > 30)motor_speed_z = 30;
+      if (motor_speed_z < -30)motor_speed_z = -30;
       Move_Transform(motor_speed_x, motor_speed_y, motor_speed_z);
   }
 }

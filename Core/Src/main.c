@@ -20,7 +20,6 @@
 #include "main.h"
 #include "dma.h"
 #include "lptim.h"
-#include "memorymap.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -404,8 +403,8 @@ void Speed_PID() {
 
 void Position_Transform(double Va,double Vb,double Vc,double Vd)
 {
-  float tmp_vx = (Va + Vb + Vc + Vd) / 4.0d;
-  float tmp_vy = (-Va + Vb + Vc - Vd) / 4.0d;
+  float tmp_vx = (Va + Vb + Vc + Vd) / 4.0;
+  float tmp_vy = (-Va + Vb + Vc - Vd) / 4.0;
   Speed_car.x = kalman_filter_update(&speed_x, tmp_vx);
   Speed_car.y = kalman_filter_update(&speed_y, tmp_vy);
   Speed_car.z = 1.0f/4.0f*(-Va+Vb-Vc+Vd)/(Car_H+Car_W);
@@ -591,7 +590,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance==TIM6) {
 
-      // if (data_flag) SpeedHandler(),data_flag = false;
+      // if (data_flag) S peedHandler(),data_flag = false;
       if (data_flag) PositionHandler(),data_flag = false;
       CheckPosition();
 

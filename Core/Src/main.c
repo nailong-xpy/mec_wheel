@@ -20,6 +20,7 @@
 #include "main.h"
 #include "dma.h"
 #include "lptim.h"
+#include "memorymap.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -66,9 +67,11 @@ extern PID_LocTypeDef Motor_C_PID;
 extern PID_LocTypeDef Motor_D_PID;
 
 char speed_rx_buffer[4096]__attribute__((section(".out")));
+char flow_rx_buffer[4096]__attribute__((section(".out")));
 char imu_rx_buffer[4096]__attribute__((section(".out")));
 
 char speed_data_buffer[4096];
+char flow_data_buffer[4096];
 char imu_data_buffer[4096];
 
 
@@ -90,6 +93,8 @@ float w ;
 Speed Speed_car, Position_car, Imu_Speed;
 
 KalmanFilter speed_x, speed_y, acc_x, acc_y, angle_z;
+KalmanFilter flow_x, flow_y;
+float cur_flow_x, cur_flow_y;
 
 float Motor_A_Set,Motor_B_Set,Motor_C_Set,Motor_D_Set;
 
@@ -162,6 +167,7 @@ int main(void)
   MX_USART3_UART_Init();
   MX_LPTIM1_Init();
   MX_TIM8_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
@@ -220,6 +226,9 @@ int main(void)
   kalman_filter_init(&speed_x, 0.01, 0.2);
   kalman_filter_init(&speed_y, 0.01, 0.2);
 
+  kalman_filter_init(&flow_x, 0.01, 0.2);
+  kalman_filter_init(&flow_y, 0.01, 0.2);
+
   kalman_filter_init(&acc_x, 0.01, 0.5);
   kalman_filter_init(&acc_y, 0.01, 0.5);
   kalman_filter_init(&angle_z, 0.01, 0.5);
@@ -227,6 +236,7 @@ int main(void)
 
   // HAL_UART_Receive_IT(&huart1, (uint8_t *)&rx, sizeof(char));
   HAL_UARTEx_ReceiveToIdle_DMA(&huart3,imu_rx_buffer,2048);
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart2,flow_rx_buffer,2048);
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1,speed_rx_buffer,2048);
   /* USER CODE END 2 */
 
@@ -410,7 +420,7 @@ void Position_Transform(double Va,double Vb,double Vc,double Vd)
   Speed_car.z = 1.0f/4.0f*(-Va+Vb-Vc+Vd)/(Car_H+Car_W);
 }
 
-void Speed_Int(float dt) {
+void Speed_Int(double dt) {
   // Position_Transform(Speed_Data_A.speed, Speed_Data_B.speed, Speed_Data_C.speed, Speed_Data_D.speed);
   //
   // float ratio = 0.6;
@@ -421,8 +431,11 @@ void Speed_Int(float dt) {
   // Imu_Speed.x = tmp_x;
   // Imu_Speed.y = tmp_y;
 
-  Speed_car.x = Speed_X.speed;
-  Speed_car.y = Speed_Y.speed;
+  // Speed_car.x = Speed_X.speed;
+  // Speed_car.y = Speed_Y.speed;
+  // 不用正交编码器， 用光流
+  Speed_car.x = cur_flow_x;
+  Speed_car.y = cur_flow_y;
 
   // Position_car.z += Speed_car.z*dt;
   // float tmp_angle_z = kalman_filter_update(&angle_z, angle_data.z[0] * angle_data.scale * 3.1415926535f / 180.0f);
@@ -601,13 +614,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
     // 新加的正交编码器
     // 原来的闭环关掉了， lptim不好使， 直接用原来的tim做正交的编码器
-      update_speed(&Speed_X, 1, METERS_PER_PULSE_XY);
-      update_speed(&Speed_Y, 5, METERS_PER_PULSE_XY);
+
+    // 正交编码器拆了，现在用光流
+      // update_speed(&Speed_X, 1, METERS_PER_PULSE_XY);
+      // update_speed(&Speed_Y, 5, METERS_PER_PULSE_XY);
       Speed_Y.speed *= -1.0f; // 反向
 
       Imu_Speed_Int(0.01f);
 
-      Speed_Int(0.01f);
+      // Speed_Int(0.01f);
+      // 在光流回调中积分
 
       Speed_PID();
 
@@ -628,11 +644,41 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   }
 }
 
+
+#define FLOW_HEIGHT 5.0f // cm
+
+void FlowInt(uint16_t dx, uint16_t dy, uint16_t dt) {
+  float tmp_speed_x = dx / 10000. * FLOW_HEIGHT / (float)dt;
+  float tmp_speed_y = dy / 10000. * FLOW_HEIGHT / (float)dt;
+  cur_flow_x = kalman_filter_update(&flow_x, tmp_speed_x);
+  cur_flow_y = kalman_filter_update(&flow_y, tmp_speed_y);
+  // dt单位是ms，转换为s
+  Speed_Int((double)dt / 1000000.0);
+}
+
+void FlowHandler(uint16_t size) {
+  for (int i=0; i<size-10; i++) {
+    if ((uint16_t)flow_data_buffer[i] == 0xFE && (uint16_t)flow_data_buffer[i+1] == 0x0A && (uint16_t)flow_data_buffer[i+10] == 0xF5) {
+      i+=2;
+      uint16_t flow_x = (flow_data_buffer[i + 1] << 8) | flow_data_buffer[i];
+      uint16_t flow_y = (flow_data_buffer[i + 3] << 8) | flow_data_buffer[i + 2];
+      uint16_t flow_t = (flow_data_buffer[i + 5] << 8) | flow_data_buffer[i + 4];
+      FlowInt(flow_x, flow_y, flow_t);
+    }
+  }
+}
+
+
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
   if (huart->Instance == USART1) {
     strcpy(speed_data_buffer, speed_rx_buffer);
     data_flag = true;
     memset(speed_rx_buffer, 0, sizeof(speed_rx_buffer));
+  }
+  if (huart->Instance == USART2) {
+    strcpy(flow_data_buffer, flow_rx_buffer);
+    FlowHandler(Size);
+    memset(flow_rx_buffer, 0, sizeof(flow_rx_buffer));
   }
   if (huart->Instance == USART3) {
     memcpy(imu_data_buffer, imu_rx_buffer, Size);
